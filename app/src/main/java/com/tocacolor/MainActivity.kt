@@ -68,23 +68,27 @@ class MainActivity : Activity() {
         root.addView(label("Modo", 20f))
         val colorBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val numbersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val packagesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val group = RadioGroup(this)
         val rbColor = RadioButton(this).apply { id = 100; text = "Color: tocar cuando cambia el color" }
         val rbNumbers = RadioButton(this).apply { id = 101; text = "Números: pulsar el número que pide" }
+        val rbPackages = RadioButton(this).apply { id = 102; text = "Paquetes: lanzar cada paquete a su caja" }
         group.addView(rbColor)
         group.addView(rbNumbers)
+        group.addView(rbPackages)
         root.addView(group)
 
         fun showMode(m: Int) {
             colorBox.visibility = if (m == Prefs.MODE_COLOR) android.view.View.VISIBLE else android.view.View.GONE
             numbersBox.visibility = if (m == Prefs.MODE_NUMBERS) android.view.View.VISIBLE else android.view.View.GONE
+            packagesBox.visibility = if (m == Prefs.MODE_PACKAGES) android.view.View.VISIBLE else android.view.View.GONE
         }
         val currentMode = prefs.getInt(Prefs.MODE, Prefs.MODE_COLOR)
-        group.check(if (currentMode == Prefs.MODE_NUMBERS) 101 else 100)
+        group.check(100 + currentMode)
         showMode(currentMode)
         group.setOnCheckedChangeListener { _, id ->
-            val m = if (id == 101) Prefs.MODE_NUMBERS else Prefs.MODE_COLOR
+            val m = (id - 100).coerceIn(0, 2)
             prefs.edit().putInt(Prefs.MODE, m).apply()
             showMode(m)
         }
@@ -101,7 +105,18 @@ class MainActivity : Activity() {
         ))
         slider(numbersBox, "Pausa entre toques (si pide varios números)", Prefs.GAP, Prefs.GAP_DEF, 30, 500, " ms")
 
+        // Ajustes modo paquetes
+        packagesBox.addView(label(
+            "Vigila el recuadro blanco de la cinta. Ya viene ajustado a tu pantalla; si no acierta " +
+                    "la zona, pulsa ⚙ en el panel y marca las esquinas del recuadro. El punto ● del panel " +
+                    "muestra el color que está viendo.", 14f
+        ))
+        slider(packagesBox, "Parte del recuadro que debe ocupar el paquete", Prefs.PKG_COVER, Prefs.PKG_COVER_DEF, 5, 80, " %")
+        slider(packagesBox, "Longitud del deslizamiento", Prefs.PKG_SWIPE, Prefs.PKG_SWIPE_DEF, 100, 700, " px")
+        slider(packagesBox, "Reintentar si el paquete no se va tras", Prefs.PKG_RETRY, Prefs.PKG_RETRY_DEF, 150, 2000, " ms")
+
         root.addView(colorBox)
+        root.addView(packagesBox)
         root.addView(numbersBox)
 
         root.addView(Button(this).apply {
@@ -117,7 +132,7 @@ class MainActivity : Activity() {
         })
         root.addView(label(
             "Al pulsar Empezar aparecerá un panel flotante: ⠿ para moverlo, ▶ empezar, ⏸ pausar, " +
-                    "⚙ calibrar (modo números) y ✕ cerrar. Si cambias de modo, cierra con ✕ y vuelve a Empezar.",
+                    "⚙ calibrar (modos números y paquetes) y ✕ cerrar. Si cambias de modo, cierra con ✕ y vuelve a Empezar.",
             13f
         ))
 

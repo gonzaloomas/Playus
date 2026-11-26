@@ -36,6 +36,7 @@ class TapService : AccessibilityService() {
     private val wm by lazy { getSystemService(WindowManager::class.java) }
     private var panel: View? = null
     private var playButton: TextView? = null
+    private var indicator: TextView? = null
     private var calib: View? = null
 
     override fun onServiceConnected() {
@@ -67,6 +68,25 @@ class TapService : AccessibilityService() {
         points.forEachIndexed { i, p ->
             main.postDelayed({ dispatchTap(p.x, p.y) }, i * gapMs)
         }
+    }
+
+    /** Desliza desde (x, y) una distancia (dx, dy). */
+    fun swipe(x: Float, y: Float, dx: Float, dy: Float) {
+        main.post {
+            val path = Path().apply {
+                moveTo(x, y)
+                lineTo(x + dx, y + dy)
+            }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 70))
+                .build()
+            dispatchGesture(gesture, null, null)
+        }
+    }
+
+    /** Puntito del panel que muestra el color detectado (gris = nada). */
+    fun showDetection(color: Int) {
+        main.post { indicator?.setTextColor(color) }
     }
 
     private fun dispatchTap(x: Float, y: Float) {
@@ -136,8 +156,14 @@ class TapService : AccessibilityService() {
             playButton = play
             root.addView(play)
 
-            if (mode == Prefs.MODE_NUMBERS) {
-                root.addView(button("⚙") { startCalibration() })
+            if (mode == Prefs.MODE_PACKAGES) {
+                val dot = button("●") {}
+                dot.setTextColor(Color.GRAY)
+                indicator = dot
+                root.addView(dot)
+            }
+            if (mode != Prefs.MODE_COLOR) {
+                root.addView(button("⚙") { startCalibration(mode) })
             }
             root.addView(button("✕") { CaptureService.instance?.stopSelf() })
 
@@ -157,6 +183,7 @@ class TapService : AccessibilityService() {
         panel = null
         calib = null
         playButton = null
+        indicator = null
     }
 
     private fun setActive(on: Boolean) {
@@ -180,11 +207,14 @@ class TapService : AccessibilityService() {
 
     // ---------- Calibración ----------
 
-    private fun startCalibration() {
+    private fun startCalibration(mode: Int) {
         if (calib != null) return
         setActive(false)
 
-        val steps = listOf(
+        val steps = if (mode == Prefs.MODE_PACKAGES) listOf(
+            "Toca la ESQUINA DE ARRIBA A LA IZQUIERDA del recuadro blanco donde se para el paquete",
+            "Ahora la ESQUINA DE ABAJO A LA DERECHA del recuadro"
+        ) else listOf(
             "Toca la ESQUINA DE ARRIBA A LA IZQUIERDA de la pantallita donde salen los números (con un poco de margen)",
             "Ahora la ESQUINA DE ABAJO A LA DERECHA de la pantallita (con un poco de margen)"
         ) + (0..9).map { "Toca el botón $it" }
@@ -228,7 +258,7 @@ class TapService : AccessibilityService() {
                 })
 
                 if (points.size == steps.size) {
-                    saveCalibration(points)
+                    if (mode == Prefs.MODE_PACKAGES) savePackageZone(points) else saveCalibration(points)
                     runCatching { wm.removeView(root) }
                     calib = null
                     Toast.makeText(this, "Calibrado ✅ Pulsa ▶ para empezar", Toast.LENGTH_LONG).show()
@@ -257,6 +287,16 @@ class TapService : AccessibilityService() {
         }
         wm.addView(root, lp)
         calib = root
+    }
+
+    private fun savePackageZone(p: List<PointF>) {
+        getSharedPreferences(Prefs.NAME, MODE_PRIVATE).edit()
+            .putFloat("px1", minOf(p[0].x, p[1].x))
+            .putFloat("py1", minOf(p[0].y, p[1].y))
+            .putFloat("px2", maxOf(p[0].x, p[1].x))
+            .putFloat("py2", maxOf(p[0].y, p[1].y))
+            .putBoolean(Prefs.PKG_CALIBRATED, true)
+            .apply()
     }
 
     private fun saveCalibration(p: List<PointF>) {

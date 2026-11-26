@@ -68,6 +68,11 @@ class CaptureService : Service() {
     private var lastCropPixels: IntArray? = null
     private var lastSeen = ""
 
+    // Modo paquetes
+    private var currentPkg = ' '
+    private var lastSwipe = 0L
+    private val hsv = FloatArray(3)
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -123,7 +128,11 @@ class CaptureService : Service() {
         screenH = dm.heightPixels
 
         // Color: 1/4 de resolución basta. Números: resolución completa para leer bien.
-        scale = if (mode == Prefs.MODE_NUMBERS) 1f else 0.25f
+        scale = when (mode) {
+            Prefs.MODE_NUMBERS -> 1f
+            Prefs.MODE_PACKAGES -> 0.5f
+            else -> 0.25f
+        }
         val w = max(1, (screenW * scale).toInt())
         val hgt = max(1, (screenH * scale).toInt())
         val r = ImageReader.newInstance(w, hgt, PixelFormat.RGBA_8888, 2)
@@ -154,6 +163,8 @@ class CaptureService : Service() {
             previous = null
             lastSeen = ""
             lastCropPixels = null
+            currentPkg = ' '
+            lastSwipe = 0L
         }
     }
 
@@ -162,7 +173,11 @@ class CaptureService : Service() {
             previous = null
             return
         }
-        if (mode == Prefs.MODE_NUMBERS) analyzeNumbers(img) else analyzeColor(img)
+        when (mode) {
+            Prefs.MODE_NUMBERS -> analyzeNumbers(img)
+            Prefs.MODE_PACKAGES -> analyzePackages(img)
+            else -> analyzeColor(img)
+        }
     }
 
     // ================= MODO COLOR =================
@@ -213,6 +228,94 @@ class CaptureService : Service() {
         val dg = abs(((a shr 8) and 0xff) - ((b shr 8) and 0xff))
         val db = abs((a and 0xff) - (b and 0xff))
         return max(dr, max(dg, db))
+    }
+
+    // ================= MODO PAQUETES =================
+
+    private fun analyzePackages(img: Image) {
+        val p = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+        val zx1: Float; val zy1: Float; val zx2: Float; val zy2: Float
+        if (p.getBoolean(Prefs.PKG_CALIBRATED, false)) {
+            zx1 = p.getFloat("px1", 0f); zy1 = p.getFloat("py1", 0f)
+            zx2 = p.getFloat("px2", 0f); zy2 = p.getFloat("py2", 0f)
+        } else {
+            zx1 = Prefs.PKG_X1 * screenW; zy1 = Prefs.PKG_Y1 * screenH
+            zx2 = Prefs.PKG_X2 * screenW; zy2 = Prefs.PKG_Y2 * screenH
+        }
+
+        val left = (zx1 * scale).toInt().coerceIn(0, img.width - 1)
+        val top = (zy1 * scale).toInt().coerceIn(0, img.height - 1)
+        val right = (zx2 * scale).toInt().coerceIn(left + 1, img.width)
+        val bottom = (zy2 * scale).toInt().coerceIn(top + 1, img.height)
+
+        val plane = img.planes[0]
+        val buf = plane.buffer
+        val ps = plane.pixelStride
+        val rs = plane.rowStride
+
+        var red = 0; var yellow = 0; var blue = 0; var total = 0
+        var y = top
+        while (y < bottom) {
+            var x = left
+            while (x < right) {
+                val o = y * rs + x * ps
+                val r = buf.get(o).toInt() and 0xff
+                val g = buf.get(o + 1).toInt() and 0xff
+                val b = buf.get(o + 2).toInt() and 0xff
+                android.graphics.Color.RGBToHSV(r, g, b, hsv)
+                if (hsv[1] >= 0.45f && hsv[2] >= 0.45f) {
+                    val h = hsv[0]
+                    when {
+                        h < 22f || h >= 340f -> red++
+                        h in 35f..62f -> yellow++
+                        h in 185f..225f -> blue++
+                    }
+                }
+                total++
+                x += 2
+            }
+            y += 2
+        }
+        if (total == 0) return
+
+        val cover = p.getInt(Prefs.PKG_COVER, Prefs.PKG_COVER_DEF)
+        val best = maxOf(red, yellow, blue)
+        val color = when {
+            best * 100 < total * cover -> ' '
+            best == red -> 'R'
+            best == yellow -> 'Y'
+            else -> 'B'
+        }
+
+        TapService.instance?.showDetection(
+            when (color) {
+                'R' -> 0xFFF06A4F.toInt()
+                'Y' -> 0xFFFFCF40.toInt()
+                'B' -> 0xFF45A8F0.toInt()
+                else -> 0xFF888888.toInt()
+            }
+        )
+
+        if (color == ' ') {
+            currentPkg = ' '
+            return
+        }
+
+        val now = SystemClock.uptimeMillis()
+        val retry = p.getInt(Prefs.PKG_RETRY, Prefs.PKG_RETRY_DEF)
+        // Paquete nuevo, o el mismo sigue ahí tras un rato (el deslizamiento no funcionó)
+        if (color != currentPkg || now - lastSwipe >= retry) {
+            currentPkg = color
+            lastSwipe = now
+            val len = p.getInt(Prefs.PKG_SWIPE, Prefs.PKG_SWIPE_DEF).toFloat()
+            val cx = (zx1 + zx2) / 2f
+            val cy = (zy1 + zy2) / 2f
+            when (color) {
+                'R' -> TapService.instance?.swipe(cx, cy, -len, 0f)
+                'Y' -> TapService.instance?.swipe(cx, cy, 0f, -len)
+                'B' -> TapService.instance?.swipe(cx, cy, len, 0f)
+            }
+        }
     }
 
     // ================= MODO NÚMEROS =================
