@@ -69,6 +69,7 @@ class MainActivity : Activity() {
         val colorBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val numbersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val packagesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val bingoBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val group = RadioGroup(this)
         val rbColor = RadioButton(this).apply { id = 100; text = "Color: tocar cuando cambia el color" }
@@ -76,19 +77,22 @@ class MainActivity : Activity() {
         val rbPackages = RadioButton(this).apply { id = 102; text = "Paquetes: lanzar cada paquete a su caja" }
         group.addView(rbColor)
         group.addView(rbNumbers)
+        val rbBingo = RadioButton(this).apply { id = 103; text = "Bingo: pulsar tu número cuando sale su bola" }
         group.addView(rbPackages)
+        group.addView(rbBingo)
         root.addView(group)
 
         fun showMode(m: Int) {
             colorBox.visibility = if (m == Prefs.MODE_COLOR) android.view.View.VISIBLE else android.view.View.GONE
             numbersBox.visibility = if (m == Prefs.MODE_NUMBERS) android.view.View.VISIBLE else android.view.View.GONE
             packagesBox.visibility = if (m == Prefs.MODE_PACKAGES) android.view.View.VISIBLE else android.view.View.GONE
+            bingoBox.visibility = if (m == Prefs.MODE_BINGO) android.view.View.VISIBLE else android.view.View.GONE
         }
         val currentMode = prefs.getInt(Prefs.MODE, Prefs.MODE_COLOR)
         group.check(100 + currentMode)
         showMode(currentMode)
         group.setOnCheckedChangeListener { _, id ->
-            val m = (id - 100).coerceIn(0, 2)
+            val m = (id - 100).coerceIn(0, 3)
             prefs.edit().putInt(Prefs.MODE, m).apply()
             showMode(m)
         }
@@ -117,6 +121,15 @@ class MainActivity : Activity() {
 
         root.addView(colorBox)
         root.addView(packagesBox)
+
+        // Ajustes modo bingo
+        bingoBox.addView(label(
+            "La primera vez, abre el juego y pulsa ⚙ en el panel: marca la zona por donde pasan las " +
+                    "bolas, la zona de tus 4 números y el centro de cada uno. El panel muestra los 4 números " +
+                    "que está leyendo, para que veas si acierta.", 14f
+        ))
+        slider(bingoBox, "Volver a pulsar si el número no cambia tras", Prefs.BINGO_RETRY, Prefs.BINGO_RETRY_DEF, 200, 3000, " ms")
+        root.addView(bingoBox)
         root.addView(numbersBox)
 
         root.addView(Button(this).apply {
@@ -132,7 +145,7 @@ class MainActivity : Activity() {
         })
         root.addView(label(
             "Al pulsar Empezar aparecerá un panel flotante: ⠿ para moverlo, ▶ empezar, ⏸ pausar, " +
-                    "⚙ calibrar (modos números y paquetes) y ✕ cerrar. Si cambias de modo, cierra con ✕ y vuelve a Empezar.",
+                    "⚙ calibrar (números, paquetes y bingo) y ✕ cerrar. Si cambias de modo, cierra con ✕ y vuelve a Empezar.",
             13f
         ))
 

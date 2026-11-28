@@ -7,6 +7,13 @@ object Prefs {
     const val MODE_COLOR = 0
     const val MODE_NUMBERS = 1
     const val MODE_PACKAGES = 2
+    const val MODE_BINGO = 3
+
+    // Modo bingo
+    const val BINGO_CALIBRATED = "bingo_calibrado"
+    const val BINGO_RETRY = "bingo_reintento"
+    const val BINGO_RETRY_DEF = 700
+    // Zona de bolas gbx1..gby2, zona de tus números gcx1..gcy2, centros gc0x..gc3y
 
     // Modo color
     const val THRESHOLD = "umbral"

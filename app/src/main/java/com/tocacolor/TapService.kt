@@ -89,6 +89,11 @@ class TapService : AccessibilityService() {
         main.post { indicator?.setTextColor(color) }
     }
 
+    /** Texto pequeño del panel (en bingo: los 4 números que está leyendo). */
+    fun showInfo(text: String) {
+        main.post { indicator?.text = text }
+    }
+
     private fun dispatchTap(x: Float, y: Float) {
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
@@ -162,6 +167,12 @@ class TapService : AccessibilityService() {
                 indicator = dot
                 root.addView(dot)
             }
+            if (mode == Prefs.MODE_BINGO) {
+                val info = button("? ? ? ?") {}
+                info.textSize = 14f
+                indicator = info
+                root.addView(info)
+            }
             if (mode != Prefs.MODE_COLOR) {
                 root.addView(button("⚙") { startCalibration(mode) })
             }
@@ -187,9 +198,13 @@ class TapService : AccessibilityService() {
     }
 
     private fun setActive(on: Boolean) {
-        if (on && CaptureService.mode == Prefs.MODE_NUMBERS &&
-            !getSharedPreferences(Prefs.NAME, MODE_PRIVATE).getBoolean(Prefs.CALIBRATED, false)
-        ) {
+        val prefs = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+        val needsCalib = when (CaptureService.mode) {
+            Prefs.MODE_NUMBERS -> !prefs.getBoolean(Prefs.CALIBRATED, false)
+            Prefs.MODE_BINGO -> !prefs.getBoolean(Prefs.BINGO_CALIBRATED, false)
+            else -> false
+        }
+        if (on && needsCalib) {
             Toast.makeText(this, "Primero calibra con ⚙", Toast.LENGTH_LONG).show()
             return
         }
@@ -211,7 +226,16 @@ class TapService : AccessibilityService() {
         if (calib != null) return
         setActive(false)
 
-        val steps = if (mode == Prefs.MODE_PACKAGES) listOf(
+        val steps = if (mode == Prefs.MODE_BINGO) listOf(
+            "Toca la ESQUINA DE ARRIBA A LA IZQUIERDA de la zona por donde pasan las bolas",
+            "Ahora la ESQUINA DE ABAJO A LA DERECHA de la zona de las bolas",
+            "Toca la ESQUINA DE ARRIBA A LA IZQUIERDA de la zona de TUS 4 números (con margen)",
+            "Ahora la ESQUINA DE ABAJO A LA DERECHA de la zona de tus 4 números",
+            "Toca el centro de tu 1er número",
+            "Toca el centro de tu 2º número",
+            "Toca el centro de tu 3er número",
+            "Toca el centro de tu 4º número"
+        ) else if (mode == Prefs.MODE_PACKAGES) listOf(
             "Toca la ESQUINA DE ARRIBA A LA IZQUIERDA del recuadro blanco donde se para el paquete",
             "Ahora la ESQUINA DE ABAJO A LA DERECHA del recuadro"
         ) else listOf(
@@ -258,7 +282,11 @@ class TapService : AccessibilityService() {
                 })
 
                 if (points.size == steps.size) {
-                    if (mode == Prefs.MODE_PACKAGES) savePackageZone(points) else saveCalibration(points)
+                    when (mode) {
+                        Prefs.MODE_PACKAGES -> savePackageZone(points)
+                        Prefs.MODE_BINGO -> saveBingo(points)
+                        else -> saveCalibration(points)
+                    }
                     runCatching { wm.removeView(root) }
                     calib = null
                     Toast.makeText(this, "Calibrado ✅ Pulsa ▶ para empezar", Toast.LENGTH_LONG).show()
@@ -287,6 +315,19 @@ class TapService : AccessibilityService() {
         }
         wm.addView(root, lp)
         calib = root
+    }
+
+    private fun saveBingo(p: List<PointF>) {
+        val e = getSharedPreferences(Prefs.NAME, MODE_PRIVATE).edit()
+        e.putFloat("gbx1", minOf(p[0].x, p[1].x)).putFloat("gby1", minOf(p[0].y, p[1].y))
+        e.putFloat("gbx2", maxOf(p[0].x, p[1].x)).putFloat("gby2", maxOf(p[0].y, p[1].y))
+        e.putFloat("gcx1", minOf(p[2].x, p[3].x)).putFloat("gcy1", minOf(p[2].y, p[3].y))
+        e.putFloat("gcx2", maxOf(p[2].x, p[3].x)).putFloat("gcy2", maxOf(p[2].y, p[3].y))
+        for (i in 0..3) {
+            e.putFloat("gc${i}x", p[4 + i].x).putFloat("gc${i}y", p[4 + i].y)
+        }
+        e.putBoolean(Prefs.BINGO_CALIBRATED, true)
+        e.apply()
     }
 
     private fun savePackageZone(p: List<PointF>) {

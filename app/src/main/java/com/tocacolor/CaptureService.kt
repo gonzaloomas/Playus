@@ -24,6 +24,7 @@ import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Display
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -73,6 +74,14 @@ class CaptureService : Service() {
     private var lastSwipe = 0L
     private val hsv = FloatArray(3)
 
+    // Modo bingo
+    private var bingoSplitY = 0f      // en la imagen compuesta: arriba bolas, abajo tus números
+    private var bingoCardOffsetY = 0  // dónde empieza la zona de tus números en la imagen compuesta
+    private var bingoCardLeft = 0f    // esquina de la zona de tus números en la pantalla
+    private var bingoCardTop = 0f
+    private val tappedNum = IntArray(4) { -1 }
+    private val tappedAt = LongArray(4)
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -105,7 +114,7 @@ class CaptureService : Service() {
         instance = this
         active = false
         mode = getSharedPreferences(Prefs.NAME, MODE_PRIVATE).getInt(Prefs.MODE, Prefs.MODE_COLOR)
-        if (mode == Prefs.MODE_NUMBERS) {
+        if (mode == Prefs.MODE_NUMBERS || mode == Prefs.MODE_BINGO) {
             recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         }
 
@@ -129,7 +138,7 @@ class CaptureService : Service() {
 
         // Color: 1/4 de resolución basta. Números: resolución completa para leer bien.
         scale = when (mode) {
-            Prefs.MODE_NUMBERS -> 1f
+            Prefs.MODE_NUMBERS, Prefs.MODE_BINGO -> 1f
             Prefs.MODE_PACKAGES -> 0.5f
             else -> 0.25f
         }
@@ -165,6 +174,7 @@ class CaptureService : Service() {
             lastCropPixels = null
             currentPkg = ' '
             lastSwipe = 0L
+            for (i in 0..3) { tappedNum[i] = -1; tappedAt[i] = 0L }
         }
     }
 
@@ -176,6 +186,7 @@ class CaptureService : Service() {
         when (mode) {
             Prefs.MODE_NUMBERS -> analyzeNumbers(img)
             Prefs.MODE_PACKAGES -> analyzePackages(img)
+            Prefs.MODE_BINGO -> analyzeBingo(img)
             else -> analyzeColor(img)
         }
     }
@@ -318,6 +329,114 @@ class CaptureService : Service() {
         }
     }
 
+    // ================= MODO BINGO =================
+
+    private fun analyzeBingo(img: Image) {
+        val p = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+        if (!p.getBoolean(Prefs.BINGO_CALIBRATED, false)) return
+
+        fun rect(prefix: String): IntArray {
+            val l = (p.getFloat("${prefix}x1", 0f) * scale).toInt().coerceIn(0, img.width - 1)
+            val t = (p.getFloat("${prefix}y1", 0f) * scale).toInt().coerceIn(0, img.height - 1)
+            val r = (p.getFloat("${prefix}x2", 0f) * scale).toInt().coerceIn(l + 1, img.width)
+            val b = (p.getFloat("${prefix}y2", 0f) * scale).toInt().coerceIn(t + 1, img.height)
+            return intArrayOf(l, t, r - l, b - t)
+        }
+        val ball = rect("gb")
+        val card = rect("gc")
+        val gap = 40
+        val w = maxOf(ball[2], card[2])
+        val h = ball[3] + gap + card[3]
+
+        // Imagen compuesta: zona de bolas arriba, zona de tus números abajo (fondo gris en medio)
+        val px = IntArray(w * h) { 0xFF808080.toInt() }
+        val plane = img.planes[0]
+        val buf = plane.buffer
+        val ps = plane.pixelStride
+        val rs = plane.rowStride
+        fun copy(r: IntArray, dstY: Int) {
+            for (y in 0 until r[3]) {
+                var o = (r[1] + y) * rs + r[0] * ps
+                val row = (dstY + y) * w
+                for (x in 0 until r[2]) {
+                    val red = buf.get(o).toInt() and 0xff
+                    val green = buf.get(o + 1).toInt() and 0xff
+                    val blue = buf.get(o + 2).toInt() and 0xff
+                    px[row + x] = (0xff shl 24) or (red shl 16) or (green shl 8) or blue
+                    o += ps
+                }
+            }
+        }
+        copy(ball, 0)
+        copy(card, ball[3] + gap)
+
+        if (lastCropPixels?.contentEquals(px) == true) return
+        lastCropPixels = px
+
+        bingoSplitY = ball[3] + gap / 2f
+        bingoCardOffsetY = ball[3] + gap
+        bingoCardLeft = card[0] / scale
+        bingoCardTop = card[1] / scale
+
+        pendingCrop = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+        runOcrIfIdle()
+    }
+
+    private fun handleBingo(text: Text) {
+        val p = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
+        val cx = FloatArray(4) { p.getFloat("gc${it}x", 0f) }
+        val cy = FloatArray(4) { p.getFloat("gc${it}y", 0f) }
+
+        // Distancia máxima para asignar un número leído a una de tus 4 casillas
+        var minPair = Float.MAX_VALUE
+        for (i in 0..3) for (j in i + 1..3) {
+            val d = kotlin.math.hypot(cx[i] - cx[j], cy[i] - cy[j])
+            if (d < minPair) minPair = d
+        }
+        val maxDist = minPair * 0.6f
+
+        val balls = HashSet<Int>()
+        val cards = IntArray(4) { -1 }
+        val cardDist = FloatArray(4) { Float.MAX_VALUE }
+
+        for (block in text.textBlocks) for (line in block.lines) for (el in line.elements) {
+            val box = el.boundingBox ?: continue
+            var digits = el.text.filter { it.isDigit() }
+            if (digits.isEmpty() && el.text.length <= 2) digits = toDigits(el.text)
+            if (digits.isEmpty() || digits.length > 3) continue
+            val n = digits.toInt()
+            val y = box.exactCenterY()
+            if (y < bingoSplitY) {
+                balls.add(n)
+            } else {
+                val sx = bingoCardLeft + box.exactCenterX() / scale
+                val sy = bingoCardTop + (y - bingoCardOffsetY) / scale
+                for (i in 0..3) {
+                    val d = kotlin.math.hypot(sx - cx[i], sy - cy[i])
+                    if (d < maxDist && d < cardDist[i]) {
+                        cardDist[i] = d
+                        cards[i] = n
+                    }
+                }
+            }
+        }
+
+        TapService.instance?.showInfo(cards.joinToString(" ") { if (it < 0) "?" else it.toString() })
+        if (!active) return
+
+        val now = SystemClock.uptimeMillis()
+        val retry = p.getInt(Prefs.BINGO_RETRY, Prefs.BINGO_RETRY_DEF)
+        for (i in 0..3) {
+            val n = cards[i]
+            if (n < 0 || n !in balls) continue
+            // No volver a pulsar la misma casilla con el mismo número enseguida
+            if (tappedNum[i] == n && now - tappedAt[i] < retry) continue
+            tappedNum[i] = n
+            tappedAt[i] = now
+            TapService.instance?.tap(cx[i], cy[i])
+        }
+    }
+
     // ================= MODO NÚMEROS =================
 
     private fun analyzeNumbers(img: Image) {
@@ -369,7 +488,14 @@ class CaptureService : Service() {
             .addOnCompleteListener { task ->
                 h.post {
                     ocrBusy = false
-                    if (task.isSuccessful) handleText(task.result?.text ?: "")
+                    if (task.isSuccessful) {
+                        val result = task.result
+                        if (mode == Prefs.MODE_BINGO) {
+                            if (result != null) handleBingo(result)
+                        } else {
+                            handleText(result?.text ?: "")
+                        }
+                    }
                     // Si mientras leíamos llegó una imagen nueva, la leemos ahora
                     runOcrIfIdle()
                 }
